@@ -16,20 +16,20 @@ from selenium.common.exceptions import WebDriverException
 # --- CONFIGURATION DE LA PAGE ---
 st.set_page_config(page_title="Générateur de Calendrier Sportif", layout="wide")
 
-# --- DONNÉES PAR DÉFAUT ---
+# --- DONNÉES PAR DÉFAUT (MISES À JOUR AVEC FFR / MON CLUB HOUSE) ---
 DONNEES_INITIALES = {
     "Rugby": {
-        "Stade Langonais (Nationale 2)": "https://app.scorenco.com/teams/48896",
-        "Salles (Nationale 2)": "https://app.scorenco.com/teams/49065",
-        "Rugby Club Bassin D'Arcachon (Fédérale 1)": "https://app.scorenco.com/teams/48892",
-        "Union Athletique Gujan Mestras (Fédérale 1)": "https://app.scorenco.com/teams/49061",
-        "Floirac Rive Droite Rugby (Fédérale 1)": "https://app.scorenco.com/teams/48901",
-        "Saint Médard Rugby Club (Fédérale 1)": "https://app.scorenco.com/teams/49059",
-        "US Bazas Rugby (Fédérale 2)": "https://app.scorenco.com/teams/49141",
-        "CA Lormont Rugby (Fédérale 2)": "https://app.scorenco.com/teams/49069",
-        "AS Mérignac Rugby (Fédérale 2)": "https://app.scorenco.com/teams/49261",
-        "US Castillonnaise (Fédérale 2)": "https://app.scorenco.com/teams/49260",
-        "Stade Bordelais (Fédérale 2)": "https://app.scorenco.com/teams/30495",
+        "Stade Langonais (Nationale 2)": "https://monclubhouse.ffr.fr/clubs/stade-langonnais",
+        "Salles (Nationale 2)": "https://monclubhouse.ffr.fr/clubs/us-salles",
+        "Rugby Club Bassin D'Arcachon (Fédérale 1)": "https://monclubhouse.ffr.fr/clubs/rugby-club-bassin-d-arcachon",
+        "Union Athletique Gujan Mestras (Fédérale 1)": "https://monclubhouse.ffr.fr/clubs/u-ath-gujan-mestras",
+        "Floirac Rive Droite Rugby (Fédérale 1)": "https://monclubhouse.ffr.fr/clubs/club-municipal-de-floirac",
+        "Saint Médard Rugby Club (Fédérale 1)": "https://monclubhouse.ffr.fr/clubs/st-medard-en-jalles-r-c",
+        "US Bazas Rugby (Fédérale 2)": "https://monclubhouse.ffr.fr/clubs/us-bazadaise",
+        "CA Lormont Rugby (Fédérale 2)": "https://monclubhouse.ffr.fr/clubs/c-a-lormont-hauts-de-garonne",
+        "AS Mérignac Rugby (Fédérale 2)": "https://monclubhouse.ffr.fr/clubs/as-merignac-rugby",
+        "US Castillonnaise (Fédérale 2)": "https://monclubhouse.ffr.fr/clubs/us-castillonnaise",
+        "Stade Bordelais (Fédérale 2)": "https://monclubhouse.ffr.fr/clubs/stade-bordelais",
         "Les Lionnes Elite 1": "https://www.leslionnes-rugby.com/calendrier?team=elite"
     },
     "Football": {
@@ -73,7 +73,7 @@ def obtenir_html_rendu(driver, url):
     """Charge la page et attend l'exécution du JavaScript"""
     try:
         driver.get(url)
-        time.sleep(4) # Pause de 4 secondes pour le chargement des données JS
+        time.sleep(5) # Pause nécessaire pour charger les calendriers dynamiques (FFR/FFHandball)
         return driver.page_source
     except Exception as e:
         st.error(f"Erreur lors du chargement de {url} : {e}")
@@ -82,8 +82,7 @@ def obtenir_html_rendu(driver, url):
 # --- MOTEUR D'EXTRACTION ---
 def analyser_html(html, sport, nom_equipe, url):
     """
-    Analyse le code HTML. 
-    Note : La structure (classes CSS) diffère entre app.scorenco, ffhandball, etc.
+    Analyse le code HTML selon qu'il s'agit de la FFR, FFHandball ou Score'n'co.
     """
     matchs_trouves = []
     if not html:
@@ -91,7 +90,7 @@ def analyser_html(html, sport, nom_equipe, url):
         
     soup = BeautifulSoup(html, 'html.parser')
     
-    # 1. Tentative d'extraction type Score'n'co (Classique & App)
+    # 1. Logique Score'n'co (Classique & App)
     toutes_les_listes = soup.find_all('ul')
     if toutes_les_listes:
         for ul in toutes_les_listes:
@@ -120,28 +119,27 @@ def analyser_html(html, sport, nom_equipe, url):
                     "Rencontre": f"{equipe_domicile} vs {equipe_exterieur}", "Source": url
                 })
 
-    # 2. Si aucun match Score'n'co n'est trouvé, tentative générique (ex: tableaux FFHandball)
+    # 2. Logique FFR (Mon Club House) & générique
     if not matchs_trouves:
-        lignes_tableau = soup.find_all('tr')
+        lignes_tableau = soup.find_all(['tr', 'div']) # Sur FFR, ce sont souvent des flex-divs
         for ligne in lignes_tableau:
-            cellules = ligne.find_all(['td', 'th'])
-            # On cherche des lignes de tableau contenant suffisamment d'informations
-            if len(cellules) >= 3:
-                texte_complet = " | ".join([c.text.strip() for c in cellules if c.text.strip()])
-                # Filtre très basique : on garde la ligne si elle n'est pas vide
-                if len(texte_complet) > 10:
+            # Cherche des structures texte correspondant à des matchs (ex: "XX/XX/XXXX" ou heures "HH:MM")
+            texte_complet = ligne.get_text(separator=' | ', strip=True)
+            if " - " in texte_complet and ("202" in texte_complet or ":" in texte_complet): 
+                # C'est un filtre heuristique qui capture bien les lignes "Équipe A - Équipe B | 15:00"
+                if len(texte_complet) > 15 and len(texte_complet) < 150:
                     matchs_trouves.append({
                         "Sport": sport, "Équipe Suivie": nom_equipe,
-                        "Date": "Format Tableau", "Heure": "À vérifier",
-                        "Rencontre": texte_complet[:150], "Source": url
+                        "Date": "Format Liste", "Heure": "À vérifier",
+                        "Rencontre": texte_complet, "Source": url
                     })
 
-    # 3. Fallback ultime si la page est chargée mais aucune structure connue n'est détectée
+    # 3. Échec d'identification HTML
     if not matchs_trouves:
          matchs_trouves.append({
             "Sport": sport, "Équipe Suivie": nom_equipe,
-            "Date": "Non détecté", "Heure": "Non détecté",
-            "Rencontre": "Structure HTML non reconnue par l'extracteur actuel.", "Source": url
+            "Date": "-", "Heure": "-",
+            "Rencontre": "Aucun match à venir détecté ou structure à affiner.", "Source": url
         })
 
     return matchs_trouves
@@ -178,7 +176,7 @@ def generer_document_word(donnees):
     return buffer
 
 # --- INTERFACE UTILISATEUR ---
-st.title("📅 Extracteur de Calendrier de Matchs (Selenium Intégré)")
+st.title("📅 Extracteur de Calendrier de Matchs")
 
 onglet_generation, onglet_gestion = st.tabs(["📊 Génération du Planning", "⚙️ Gestion des Équipes et Liens"])
 
@@ -211,11 +209,10 @@ with onglet_generation:
             if not equipes_selectionnees:
                 st.warning("Veuillez cocher au moins une équipe.")
             else:
-                avec_spinner = st.spinner("Démarrage du navigateur et analyse des sites (cela peut prendre quelques minutes)...")
+                avec_spinner = st.spinner("Analyse des sites officiels via navigateur fantôme...")
                 tous_les_matchs = []
                 
                 with avec_spinner:
-                    # Initialisation unique du navigateur pour toute la boucle
                     navigateur = initialiser_navigateur()
                     
                     if navigateur:
@@ -223,17 +220,19 @@ with onglet_generation:
                         total_equipes = len(equipes_selectionnees)
                         
                         for index, eq in enumerate(equipes_selectionnees):
-                            st.write(f"Analyse en cours : {eq['Nom']}...")
+                            st.write(f"Vérification : {eq['Nom']}...")
                             html_rendu = obtenir_html_rendu(navigateur, eq["URL"])
                             matchs_extraits = analyser_html(html_rendu, eq["Sport"], eq["Nom"], eq["URL"])
-                            tous_les_matchs.extend(matchs_extraits)
                             
-                            # Mise à jour de la barre de progression
+                            # Nettoyage des doublons liés à la logique générique
+                            matchs_uniques = [dict(t) for t in {tuple(d.items()) for d in matchs_extraits}]
+                            tous_les_matchs.extend(matchs_uniques)
+                            
                             barre_progression.progress((index + 1) / total_equipes)
                             
-                        navigateur.quit() # Fermeture propre du navigateur
+                        navigateur.quit()
                     else:
-                        st.error("Impossible de lancer le navigateur Selenium.")
+                        st.error("Impossible de lancer le module d'extraction web.")
                 
                 if tous_les_matchs:
                     st.success(f"Extraction terminée !")
@@ -265,14 +264,14 @@ with onglet_gestion:
         sport_final = si_autre_sport if nouveau_sport == "Autre" and si_autre_sport else nouveau_sport
         
         nouveau_nom = st.text_input("Nom de l'équipe")
-        nouvelle_url = st.text_input("URL de la page calendrier")
+        nouvelle_url = st.text_input("URL de la page calendrier officielle")
         
         if st.button("Ajouter l'équipe"):
             if sport_final and nouveau_nom and nouvelle_url:
                 if sport_final not in st.session_state['base_clubs']:
                     st.session_state['base_clubs'][sport_final] = {}
                 st.session_state['base_clubs'][sport_final][nouveau_nom] = nouvelle_url
-                st.success(f"L'équipe {nouveau_nom} a été ajoutée avec succès !")
+                st.success(f"L'équipe {nouveau_nom} a été ajoutée !")
                 st.rerun()
             else:
                 st.error("Veuillez remplir tous les champs.")
